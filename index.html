@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Watch Progress API Tester</title>
+  <style>
+    body{font-family:system-ui,sans-serif;max-width:900px;margin:32px auto;padding:0 16px;background:#0f1115;color:#eee}
+    input,select,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #39404d;background:#171a21;color:#eee;box-sizing:border-box}
+    input,select{width:100%} label{display:block;margin:12px 0 6px} .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    button{cursor:pointer;margin:12px 8px 12px 0;background:#252b36} button:hover{background:#303846}
+    pre{white-space:pre-wrap;word-break:break-word;background:#080a0d;padding:16px;border-radius:10px;min-height:180px;overflow:auto}
+    .full{grid-column:1/-1}.hint{color:#9aa4b2;font-size:.9rem}
+    @media(max-width:650px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <h1>Watch Progress Tester</h1>
+  <p class="hint">The backend always generates <code>watched_id</code>; any client-supplied value is ignored.</p>
+
+  <div class="grid">
+    <div class="full">
+      <label for="baseUrl">Backend Base URL</label>
+      <input id="baseUrl" value="" placeholder="https://your-service.onrender.com">
+    </div>
+    <div><label for="userId">User ID</label><input id="userId" value="demo-user"></div>
+    <div><label for="videoId">Video ID</label><input id="videoId" type="number" min="1" value="550"></div>
+    <div><label for="mediaType">Type</label><select id="mediaType"><option value="movies">movies</option><option value="tv">tv</option></select></div>
+    <div><label for="total">Total Time (ms)</label><input id="total" type="number" min="0" value="7200000"></div>
+    <div><label for="playback">Playback Time (ms)</label><input id="playback" type="number" min="0" value="123000"></div>
+    <div><label for="season">Season</label><input id="season" type="number" min="0" value="0"></div>
+    <div><label for="episode">Episode</label><input id="episode" type="number" min="0" value="0"></div>
+    <div class="full"><label for="deviceHost">Device Host</label><input id="deviceHost" value="web-tester"></div>
+  </div>
+
+  <button id="save">Save Progress</button>
+
+  <hr>
+  <h2>Load Progress</h2>
+  <div class="grid">
+    <div><label for="loadUser">User ID</label><input id="loadUser" value="demo-user"></div>
+    <div><label for="watchedId">Watched ID</label><input id="watchedId" value="m550" placeholder="m550 or tv330"></div>
+  </div>
+  <button id="load">Load Progress</button>
+
+  <h2>Response</h2>
+  <pre id="response">Ready.</pre>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const response = $('response');
+
+    function baseUrl() {
+      const value = $('baseUrl').value.trim();
+      return value || window.location.origin;
+    }
+
+    async function request(url, options = {}) {
+      response.textContent = 'Loading...';
+      try {
+        const res = await fetch(url, options);
+        const text = await res.text();
+        let body;
+        try { body = JSON.parse(text); } catch { body = text; }
+        response.textContent = JSON.stringify({ http_status: res.status, response: body }, null, 2);
+      } catch (err) {
+        response.textContent = JSON.stringify({ error: String(err) }, null, 2);
+      }
+    }
+
+    $('save').onclick = () => {
+      const payload = {
+        user_id: $('userId').value.trim(),
+        video_id: Number($('videoId').value),
+        media_type: $('mediaType').value,
+        total_time_ms: Number($('total').value),
+        playback_time_ms: Number($('playback').value),
+        season_number: Number($('season').value),
+        episode_number: Number($('episode').value),
+        device_host: $('deviceHost').value.trim(),
+        watched_id: 'client-cannot-control-this'
+      };
+      request(`${baseUrl()}/api/progress`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+    };
+
+    $('load').onclick = () => {
+      const user = encodeURIComponent($('loadUser').value.trim());
+      const watched = encodeURIComponent($('watchedId').value.trim());
+      request(`${baseUrl()}/api/progress/${user}/${watched}`);
+    };
+  </script>
+</body>
+</html>
