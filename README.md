@@ -1,310 +1,387 @@
-# Watch Progress API — Go + Supabase + Render
+# Watch Progress API — Go + Supabase Auth + Supabase PostgreSQL + Render
 
-Production-oriented watch-progress backend using Go `net/http`, PostgreSQL on Supabase, and Render native Go hosting.
+A lightweight account + watch-progress backend for websites, Android, and Android TV.
 
 ## Architecture
 
-`HTML tester / Android / TV app -> Render Go API -> Supabase PostgreSQL`
+```text
+Website / Android / Android TV
+          │
+          │ email + password
+          ▼
+      Go API (Render)
+          │
+          ├── Supabase Auth
+          │      └── one permanent user UUID
+          │
+          └── PostgreSQL (Supabase)
+                 └── watch_progress.user_id
+```
 
-The client never controls `watched_id`. The server derives it from `media_type` and `video_id`:
+The important rule is: clients never choose `user_id` for watch progress. The Go API verifies the Supabase access token and gets the user ID from Supabase Auth.
 
-- `movies` + `550` -> `m550`
-- `tv` + `330` -> `tv330`
+That is what makes the same account work on website, mobile, and TV.
 
 ## 1. Supabase
 
-### Create or use a project
+The connected Supabase project is already active. Its project URL is:
 
-You can use an existing Supabase project or create a new one. Open the SQL Editor and run `schema.sql`.
-
-The schema enables RLS on the table because it is in the public schema. The Go API connects with the PostgreSQL connection string, so the public browser never receives a Supabase secret.
-
-### Connection string
-
-Open Supabase Dashboard -> Connect and copy a PostgreSQL connection string.
-
-For a persistent Render service:
-
-1. Prefer the **direct connection** on port `5432` if the Render network can reach your Supabase database over IPv6.
-2. If you need IPv4, use Supavisor **session mode** on port `5432`.
-3. Do not use the Supavisor **transaction-mode** connection on port `6543` for this long-running service unless you deliberately configure your driver for transaction pooling. Transaction pooling is aimed at short-lived/serverless traffic and does not support prepared statements.
-
-The app also keeps its own small `database/sql` pool (`5` max open, `2` idle), which is appropriate for a small Render service.
-
-### Important: existing table name
-
-If your Supabase database already has a different `public.watch_progress` table, do not blindly overwrite it. In the supplied setup, the existing table was preserved as `watch_progress_legacy` before the requested schema was installed. Review that legacy table before deleting it.
-
-## 2. Local project
-
-Install Go 1.25+ and Git. Then create the project:
-
-```bash
-mkdir watch-progress-api
-cd watch-progress-api
-git init
-git branch -M main
+```text
+https://wawlivuobjvvkbkaampj.supabase.co
 ```
 
-Copy these files into the directory:
+Run `schema.sql` in the Supabase SQL Editor.
 
-- `main.go`
-- `go.mod`
-- `schema.sql`
-- `.env.example`
-- `Dockerfile`
-- `render.yaml`
-- `index.html`
-- `README.md`
+The requested `watch_progress` table is server-owned. RLS is enabled as defense in depth; the Go API connects with the database credentials and performs the progress queries server-side.
 
-Download dependencies and verify the build:
+For `DATABASE_URL`, use the Supabase Connect panel. For a long-running Render service, prefer the direct PostgreSQL connection if IPv6 connectivity is available. Otherwise use Supavisor session mode (port 5432). Avoid transaction mode (6543) for this stateful `database/sql` pool unless you specifically configure for transaction pooling.
 
-```bash
-go mod tidy
-go build ./...
-```
+## 2. Supabase Auth settings
 
-For local testing, create `.env` from `.env.example` and set your real `DATABASE_URL`. Do not commit `.env`.
+In Supabase Dashboard → Authentication → Providers → Email, keep Email enabled.
 
-A simple local run is:
+You can enable or disable email confirmation depending on your desired signup flow. When email confirmation is enabled, sign-up can succeed without immediately returning a usable access token; the user must confirm the email and then sign in.
+
+The browser never receives a database password. It receives only a normal Supabase access token.
+
+## 3. Required environment variables
+
+Local `.env` / shell:
 
 ```bash
 export DATABASE_URL='postgresql://...'
+export SUPABASE_URL='https://wawlivuobjvvkbkaampj.supabase.co'
+export SUPABASE_PUBLISHABLE_KEY='sb_publishable_...'
 export PORT=10000
-go run .
 ```
 
-Then open `http://localhost:10000/`.
+`SUPABASE_PUBLISHABLE_KEY` is safe for client-side use in principle, but this implementation keeps it on the Go side and the browser talks only to your API.
 
-## 3. GitHub
+Never commit `DATABASE_URL` or any secret/service-role key to GitHub.
 
-Create an empty GitHub repository, then run:
+## 4. Authentication API
 
-```bash
-git add main.go go.mod go.sum schema.sql .env.example Dockerfile render.yaml index.html README.md
-git commit -m "Build watch progress API"
-git remote add origin https://github.com/YOUR_USERNAME/watch-progress-api.git
-git push -u origin main
-```
-
-Never commit a real `.env` or a real Supabase database password.
-
-## 4. Render auto-deploy
-
-The repository contains `render.yaml`. It defines:
-
-- Go native runtime
-- free web service
-- Singapore region
-- `main` branch
-- automatic deploy on commit
-- `go build ...` build command
-- `./watch-progress-api` start command
-- `/health` health check
-- `DATABASE_URL` as a secret/sync-false environment variable
-- `PORT=10000`
-
-Render's native Go runtime is the preferred deployment method here. It avoids maintaining a container image and lets Render provide the Go build environment. The Dockerfile is retained as an optional fallback for environments where you explicitly choose Docker.
-
-### Connect the Blueprint
-
-In Render:
-
-1. Open the Render dashboard.
-2. Choose **New -> Blueprint**.
-3. Select the GitHub repository containing this `render.yaml`.
-4. Select the `main` branch.
-5. Review the Blueprint before applying it.
-6. Render creates the web service from `render.yaml`.
-7. Because `DATABASE_URL` uses `sync: false`, provide the real Supabase connection string when Render asks for the secret. It is not stored in Git.
-8. Apply the Blueprint.
-
-After that, a push to `main` should automatically start a new Render deploy.
-
-### What to verify in Render
-
-Open the web service and check:
-
-- Runtime: Go
-- Branch: `main`
-- Auto Deploy: enabled
-- Build command: `go build -trimpath -ldflags='-s -w' -o watch-progress-api .`
-- Start command: `./watch-progress-api`
-- Health check path: `/health`
-- `DATABASE_URL` exists as a secret environment variable
-- Deploy history shows a successful build and running instance
-
-Your public URL will look like:
-
-```text
-https://watch-progress-api.onrender.com
-```
-
-Use the exact URL Render gives your service.
-
-## 5. Frontend tester
-
-The Go service serves `index.html` at `/`, so the easiest option is simply:
-
-```text
-https://YOUR-SERVICE.onrender.com/
-```
-
-You can also open `index.html` directly from disk. Enter the live Render URL in **Backend Base URL**. CORS is enabled for testing, including local-file usage.
-
-For production, replace `Access-Control-Allow-Origin: *` with your real frontend origin and add authentication/rate limiting before exposing user progress data publicly.
-
-## 6. API
-
-### Health
+### Sign up
 
 ```http
-GET /health
-```
-
-Response:
-
-```json
-{"status":"ok"}
-```
-
-### Save progress
-
-```http
-POST /api/progress
+POST /api/auth/signup
 Content-Type: application/json
 ```
 
-Example:
+```json
+{
+  "email": "user@example.com",
+  "password": "strong-password"
+}
+```
+
+### Sign in
+
+```http
+POST /api/auth/signin
+Content-Type: application/json
+```
 
 ```json
 {
-  "user_id": "user123",
+  "email": "user@example.com",
+  "password": "strong-password"
+}
+```
+
+The Go backend proxies these calls to Supabase Auth.
+
+### Current user
+
+```http
+GET /api/auth/user
+Authorization: Bearer ACCESS_TOKEN
+```
+
+The server asks Supabase Auth to validate the access token and returns the authenticated user's UUID/email.
+
+## 5. Progress API
+
+Save:
+
+```http
+POST /api/progress
+Authorization: Bearer ACCESS_TOKEN
+Content-Type: application/json
+```
+
+```json
+{
   "video_id": 550,
   "media_type": "movies",
   "total_time_ms": 7200000,
   "playback_time_ms": 123000,
   "season_number": 0,
   "episode_number": 0,
-  "device_host": "android-tv",
-  "watched_id": "anything"
+  "device_host": "android-tv"
 }
 ```
 
-The server ignores the supplied `watched_id` and returns `m550`.
+There is deliberately no `user_id` field and no `watched_id` field.
 
-For TV `video_id=330`, the returned ID is `tv330`.
+The server creates:
 
-### Load progress
-
-```http
-GET /api/progress/user123/m550
+```text
+movies + 550 -> m550
+tv + 330     -> tv330
 ```
 
-or:
+Load:
 
 ```http
-GET /api/progress/user123/tv330
+GET /api/progress/{authenticated_user_id}/{watched_id}
+Authorization: Bearer ACCESS_TOKEN
 ```
 
-## 7. curl tests against Render
+The server also checks that the path user ID equals the authenticated account, preventing one signed-in user from requesting another user's progress.
 
-Set your deployed URL:
+## 6. Same account on website, mobile, and TV
+
+Suppose a user registers:
+
+```text
+user@gmail.com
+```
+
+Supabase Auth assigns one UUID, for example:
+
+```text
+f2c5...-....-....-....-........
+```
+
+Website sign-in → same UUID
+
+Android sign-in → same UUID
+
+Android TV sign-in → same UUID
+
+A movie saved by the phone therefore belongs to that same UUID. The TV signs into the same account and receives the same progress.
+
+Example:
+
+```text
+Phone:
+Movie 550 -> 12:03
+
+        ↓ same account
+
+TV:
+GET /api/progress/<same-user-id>/m550
+
+        ↓
+
+playback_time_ms = 723000
+```
+
+## 7. Local run
+
+```bash
+go mod tidy
+go build ./...
+go run .
+```
+
+Open:
+
+```text
+http://localhost:10000/
+```
+
+The included `index.html` contains:
+
+- Sign Up
+- Sign In
+- Sign Out
+- current-session check
+- Save Progress
+- Load Progress
+- raw JSON response panel
+
+## 8. GitHub
+
+Create an empty repository named for example:
+
+```text
+watch-progress-api
+```
+
+Then:
+
+```bash
+git init
+git branch -M main
+git add .
+git commit -m "Add Supabase auth and watch progress API"
+git remote add origin https://github.com/YOUR_USERNAME/watch-progress-api.git
+git push -u origin main
+```
+
+Do not commit `.env`.
+
+Recommended `.gitignore`:
+
+```gitignore
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+```
+
+## 9. Render
+
+Use Render Blueprint with `render.yaml`.
+
+The service is configured for:
+
+- Go native runtime
+- Singapore region
+- `main` branch
+- automatic deploy on commit
+- `go build` build command
+- compiled binary start command
+- `/health` health check
+
+Set these environment variables in Render:
+
+```text
+DATABASE_URL=your Supabase PostgreSQL connection string
+SUPABASE_URL=https://wawlivuobjvvkbkaampj.supabase.co
+SUPABASE_PUBLISHABLE_KEY=your sb_publishable key
+```
+
+`PORT` is set by the Blueprint, and the Go server also respects Render's injected value.
+
+## 10. Deploy flow
+
+```text
+edit code
+  ↓
+git push origin main
+  ↓
+Render detects commit
+  ↓
+Go build
+  ↓
+Render deploys new version
+  ↓
+/health passes
+  ↓
+API live
+```
+
+## 11. curl tests
+
+Set:
 
 ```bash
 export API='https://YOUR-SERVICE.onrender.com'
 ```
 
-Health check:
+### Health
 
 ```bash
 curl -i "$API/health"
 ```
 
-Save a movie:
+### Sign up
+
+```bash
+curl -i -X POST "$API/api/auth/signup" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"demo@example.com","password":"demo-password-123"}'
+```
+
+### Sign in
+
+```bash
+curl -s -X POST "$API/api/auth/signin" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"demo@example.com","password":"demo-password-123"}'
+```
+
+Copy `access_token` from the response:
+
+```bash
+export TOKEN='PASTE_ACCESS_TOKEN_HERE'
+```
+
+Get the current user:
+
+```bash
+curl -i "$API/api/auth/user" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Save movie progress:
 
 ```bash
 curl -i -X POST "$API/api/progress" \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
-    "user_id":"demo-user",
     "video_id":550,
     "media_type":"movies",
     "total_time_ms":7200000,
     "playback_time_ms":123000,
     "season_number":0,
     "episode_number":0,
-    "device_host":"android-tv",
-    "watched_id":"client-value-is-ignored"
+    "device_host":"android-tv"
   }'
 ```
 
-Expected important field:
+The response contains:
 
 ```json
 "watched_id": "m550"
 ```
 
-Load it:
+Get the current user UUID first, then:
 
 ```bash
-curl -i "$API/api/progress/demo-user/m550"
+export USER_ID='PASTE_UUID_HERE'
 ```
 
-Save a TV item:
+Load progress:
 
 ```bash
-curl -i -X POST "$API/api/progress" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "user_id":"demo-user",
-    "video_id":330,
-    "media_type":"tv",
-    "total_time_ms":1800000,
-    "playback_time_ms":420000,
-    "season_number":2,
-    "episode_number":4,
-    "device_host":"android-tv"
-  }'
+curl -i "$API/api/progress/$USER_ID/m550" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Load it:
+## 12. Security model
 
-```bash
-curl -i "$API/api/progress/demo-user/tv330"
+The current design intentionally separates public account credentials from database access:
+
+```text
+Browser / TV / Mobile
+        │
+        │ email/password
+        ▼
+      Go API
+        │
+        │ Supabase Auth
+        ▼
+     access token
+        │
+        ▼
+ authenticated UUID
+        │
+        ▼
+ PostgreSQL progress
 ```
 
-Invalid media type test:
+Do not put `DATABASE_URL` or a Supabase service-role/secret key into HTML or an Android APK.
 
-```bash
-curl -i -X POST "$API/api/progress" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "user_id":"demo-user",
-    "video_id":550,
-    "media_type":"movie",
-    "total_time_ms":1000,
-    "playback_time_ms":500
-  }'
-```
+For a real public deployment, the next hardening steps are:
 
-That request should return HTTP `400`.
-
-## 8. Upsert behavior
-
-The unique key is `(user_id, watched_id)`. Saving `demo-user + m550` again updates the existing row instead of creating a duplicate. `updated_at` is refreshed by the database trigger.
-
-## 9. Production hardening
-
-This project is production-deployable as a small internal/service API, but if it will serve real users, add authentication before treating `user_id` as trusted identity. At minimum:
-
-- authenticate the caller and derive `user_id` server-side;
-- replace wildcard CORS with the exact frontend origin(s);
-- add rate limiting;
-- add request metrics/log aggregation;
-- consider a larger pool only after measuring connection usage;
-- keep database credentials only in Render environment variables;
-- keep RLS enabled on the Supabase table;
-- add a proper authorization policy if clients ever access Supabase directly.
-
-The current Go API uses the PostgreSQL connection directly and does not expose the Supabase database credentials to the browser.
+- restrict CORS to your actual website/app origins where practical;
+- add request rate limiting;
+- consider refresh-token/logout handling in native clients;
+- add structured logs/metrics;
+- decide whether progress writes should be throttled to every few seconds rather than every playback tick.

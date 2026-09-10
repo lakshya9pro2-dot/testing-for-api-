@@ -18,7 +18,8 @@ create table if not exists public.watch_progress (
     constraint watch_progress_unique_user_watched unique (user_id, watched_id),
     constraint watch_progress_watched_id_format_check check (
         (media_type = 'movies' and watched_id = 'm' || video_id::text)
-        or (media_type = 'tv' and watched_id = 'tv' || video_id::text)
+        or
+        (media_type = 'tv' and watched_id = 'tv' || video_id::text)
     )
 );
 
@@ -28,6 +29,7 @@ create index if not exists watch_progress_updated_at_idx on public.watch_progres
 create or replace function public.set_watch_progress_updated_at()
 returns trigger
 language plpgsql
+set search_path = public
 as $$
 begin
     new.updated_at = now();
@@ -38,7 +40,6 @@ $$;
 drop trigger if exists trg_watch_progress_updated_at on public.watch_progress;
 create trigger trg_watch_progress_updated_at
 before update on public.watch_progress
-for each row
-execute function public.set_watch_progress_updated_at();
+for each row execute function public.set_watch_progress_updated_at();
 
 alter table public.watch_progress enable row level security;

@@ -12,5 +12,9 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: SUPABASE_URL
+        value: https://wawlivuobjvvkbkaampj.supabase.co
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
       - key: PORT
         value: "10000"

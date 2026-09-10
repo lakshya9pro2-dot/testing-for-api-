@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,11 +19,13 @@ import (
 )
 
 type App struct {
-	db *sql.DB
+	db             *sql.DB
+	supabaseURL    string
+	publishableKey string
+	httpClient     *http.Client
 }
 
 type progressRequest struct {
-	UserID         string `json:"user_id"`
 	VideoID        int    `json:"video_id"`
 	MediaType      string `json:"media_type"`
 	TotalTimeMS    int64  `json:"total_time_ms"`
@@ -29,7 +33,6 @@ type progressRequest struct {
 	SeasonNumber   int    `json:"season_number"`
 	EpisodeNumber  int    `json:"episode_number"`
 	DeviceHost     string `json:"device_host"`
-	WatchedID      string `json:"watched_id,omitempty"`
 }
 
 type progressResponse struct {
@@ -47,10 +50,30 @@ type progressResponse struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type authCredentials struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type supabaseUser struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
 func main() {
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
+	}
+
+	supabaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("SUPABASE_URL")), "/")
+	if supabaseURL == "" {
+		log.Fatal("SUPABASE_URL is required")
+	}
+
+	publishableKey := strings.TrimSpace(os.Getenv("SUPABASE_PUBLISHABLE_KEY"))
+	if publishableKey == "" {
+		log.Fatal("SUPABASE_PUBLISHABLE_KEY is required")
 	}
 
 	port := os.Getenv("PORT")
@@ -67,8 +90,6 @@ func main() {
 	}
 	defer db.Close()
 
-	// Small application-side pool: Render runs one persistent service and Supabase
-	// handles the database side. These values avoid opening unnecessary connections.
 	db.SetMaxOpenConns(5)
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxLifetime(30 * time.Minute)
@@ -80,9 +101,18 @@ func main() {
 		log.Fatalf("database ping: %v", err)
 	}
 
-	app := &App{db: db}
+	app := &App{
+		db:             db,
+		supabaseURL:    supabaseURL,
+		publishableKey: publishableKey,
+		httpClient:     &http.Client{Timeout: 10 * time.Second},
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", app.health)
+	mux.HandleFunc("/api/auth/signup", app.signup)
+	mux.HandleFunc("/api/auth/signin", app.signin)
+	mux.HandleFunc("/api/auth/user", app.currentUser)
 	mux.HandleFunc("/api/progress", app.progress)
 	mux.HandleFunc("/api/progress/", app.progressByID)
 	mux.HandleFunc("/", app.index)
@@ -118,9 +148,139 @@ func (a *App) index(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "index.html")
 }
 
+func (a *App) signup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	a.handleAuth(w, r, "/auth/v1/signup")
+}
+
+func (a *App) signin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	a.handleAuth(w, r, "/auth/v1/token?grant_type=password")
+}
+
+func (a *App) handleAuth(w http.ResponseWriter, r *http.Request, path string) {
+	var req authCredentials
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Email == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "email and password are required")
+		return
+	}
+	if len(req.Password) < 6 {
+		writeError(w, http.StatusBadRequest, "password must be at least 6 characters")
+		return
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode request")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	reqURL := a.supabaseURL + path
+	supaReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create auth request")
+		return
+	}
+	supaReq.Header.Set("Content-Type", "application/json")
+	supaReq.Header.Set("apikey", a.publishableKey)
+
+	resp, err := a.httpClient.Do(supaReq)
+	if err != nil {
+		log.Printf("supabase auth request: %v", err)
+		writeError(w, http.StatusBadGateway, "authentication service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to read authentication response")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(payload)
+}
+
+func (a *App) currentUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	user, err := a.authenticate(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid or expired access token")
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (a *App) authenticate(r *http.Request) (supabaseUser, error) {
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if auth == "" || !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		return supabaseUser{}, errors.New("missing bearer token")
+	}
+	token := strings.TrimSpace(auth[len("Bearer "):])
+	if token == "" {
+		return supabaseUser{}, errors.New("empty bearer token")
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.supabaseURL+"/auth/v1/user", nil)
+	if err != nil {
+		return supabaseUser{}, err
+	}
+	req.Header.Set("apikey", a.publishableKey)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return supabaseUser{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return supabaseUser{}, fmt.Errorf("supabase returned %s", resp.Status)
+	}
+
+	var user supabaseUser
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&user); err != nil {
+		return supabaseUser{}, err
+	}
+	if user.ID == "" {
+		return supabaseUser{}, errors.New("supabase user id missing")
+	}
+	return user, nil
+}
+
 func (a *App) progress(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	user, err := a.authenticate(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
 
@@ -131,6 +291,7 @@ func (a *App) progress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+
 	if err := validateProgress(req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -142,8 +303,10 @@ func (a *App) progress(w http.ResponseWriter, r *http.Request) {
         insert into public.watch_progress (
             user_id, video_id, media_type, total_time_ms, playback_time_ms,
             season_number, episode_number, device_host, watched_id
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-        on conflict (user_id, watched_id) do update set
+        )
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        on conflict (user_id, watched_id)
+        do update set
             video_id = excluded.video_id,
             media_type = excluded.media_type,
             total_time_ms = excluded.total_time_ms,
@@ -152,15 +315,18 @@ func (a *App) progress(w http.ResponseWriter, r *http.Request) {
             episode_number = excluded.episode_number,
             device_host = excluded.device_host,
             updated_at = now()
-        returning id, user_id, video_id, media_type, total_time_ms, playback_time_ms,
-                  season_number, episode_number, device_host, watched_id, created_at, updated_at`
+        returning id,user_id,video_id,media_type,total_time_ms,playback_time_ms,
+                  season_number,episode_number,device_host,watched_id,created_at,updated_at
+    `
 
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 
 	var out progressResponse
-	err := a.db.QueryRowContext(ctx, query,
-		req.UserID,
+	err = a.db.QueryRowContext(
+		ctx,
+		query,
+		user.ID,
 		req.VideoID,
 		req.MediaType,
 		req.TotalTimeMS,
@@ -198,25 +364,35 @@ func (a *App) progressByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw := strings.TrimPrefix(r.URL.Path, "/api/progress/")
-	pathParts := strings.Split(raw, "/")
-	if len(pathParts) != 2 || pathParts[0] == "" || pathParts[1] == "" {
+	user, err := a.authenticate(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/progress/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		writeError(w, http.StatusBadRequest, "path must be /api/progress/{user_id}/{watched_id}")
 		return
 	}
-	userID, watchedID := pathParts[0], pathParts[1]
+
+	if parts[0] != user.ID {
+		writeError(w, http.StatusForbidden, "user_id does not match the authenticated account")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	const query = `
-        select id, user_id, video_id, media_type, total_time_ms, playback_time_ms,
-               season_number, episode_number, device_host, watched_id, created_at, updated_at
+        select id,user_id,video_id,media_type,total_time_ms,playback_time_ms,
+               season_number,episode_number,device_host,watched_id,created_at,updated_at
         from public.watch_progress
-        where user_id = $1 and watched_id = $2`
+        where user_id = $1 and watched_id = $2
+    `
 
 	var out progressResponse
-	err := a.db.QueryRowContext(ctx, query, userID, watchedID).Scan(
+	err = a.db.QueryRowContext(ctx, query, user.ID, parts[1]).Scan(
 		&out.ID,
 		&out.UserID,
 		&out.VideoID,
@@ -244,9 +420,6 @@ func (a *App) progressByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func validateProgress(req progressRequest) error {
-	if strings.TrimSpace(req.UserID) == "" {
-		return errors.New("user_id is required")
-	}
 	if req.VideoID <= 0 {
 		return errors.New("video_id must be greater than 0")
 	}
@@ -255,6 +428,9 @@ func validateProgress(req progressRequest) error {
 	}
 	if req.TotalTimeMS < 0 || req.PlaybackTimeMS < 0 {
 		return errors.New("time values cannot be negative")
+	}
+	if req.PlaybackTimeMS > req.TotalTimeMS && req.TotalTimeMS > 0 {
+		return errors.New("playback_time_ms cannot exceed total_time_ms")
 	}
 	if req.SeasonNumber < 0 || req.EpisodeNumber < 0 {
 		return errors.New("season_number and episode_number cannot be negative")
@@ -269,12 +445,12 @@ func makeWatchedID(mediaType string, videoID int) string {
 	return fmt.Sprintf("m%d", videoID)
 }
 
-func nullableString(s string) any {
-	s = strings.TrimSpace(s)
-	if s == "" {
+func nullableString(value string) any {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return nil
 	}
-	return s
+	return value
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -286,17 +462,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]any{
-		"error":  message,
-		"status": status,
-	})
+	writeJSON(w, status, map[string]any{"error": message, "status": status})
 }
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "86400")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

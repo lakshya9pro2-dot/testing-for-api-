@@ -1,97 +1,71 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Watch Progress API Tester</title>
-  <style>
-    body{font-family:system-ui,sans-serif;max-width:900px;margin:32px auto;padding:0 16px;background:#0f1115;color:#eee}
-    input,select,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #39404d;background:#171a21;color:#eee;box-sizing:border-box}
-    input,select{width:100%} label{display:block;margin:12px 0 6px} .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-    button{cursor:pointer;margin:12px 8px 12px 0;background:#252b36} button:hover{background:#303846}
-    pre{white-space:pre-wrap;word-break:break-word;background:#080a0d;padding:16px;border-radius:10px;min-height:180px;overflow:auto}
-    .full{grid-column:1/-1}.hint{color:#9aa4b2;font-size:.9rem}
-    @media(max-width:650px){.grid{grid-template-columns:1fr}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watch Progress Account Tester</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3}.wrap{max-width:900px;margin:0 auto;padding:28px 16px}h1,h2{margin-top:0}.card{background:#161b22;border:1px solid #30363d;border-radius:14px;padding:18px;margin-bottom:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:block;font-size:.9rem;margin-bottom:6px;color:#9da7b3}input,select,button{font:inherit;width:100%;padding:11px;border-radius:9px;border:1px solid #30363d;background:#0d1117;color:#e6edf3}button{cursor:pointer;background:#21262d}button:hover{background:#30363d}.row{display:flex;gap:10px}.row>*{flex:1}.full{grid-column:1/-1}.muted{color:#8b949e}.status{padding:10px 12px;border-radius:8px;background:#0d1117;border:1px solid #30363d;margin-top:10px}.hidden{display:none}pre{background:#080b0f;border:1px solid #30363d;padding:14px;border-radius:10px;white-space:pre-wrap;word-break:break-word;min-height:180px}.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#21262d;font-size:.8rem}@media(max-width:650px){.grid{grid-template-columns:1fr}.row{flex-direction:column}}
+</style>
 </head>
 <body>
-  <h1>Watch Progress Tester</h1>
-  <p class="hint">The backend always generates <code>watched_id</code>; any client-supplied value is ignored.</p>
+<div class="wrap">
+<h1>Watch Progress Tester</h1>
+<p class="muted">Create one account, then use the same account on your website, phone, or TV app. The server derives the user ID from the authenticated Supabase session.</p>
 
-  <div class="grid">
-    <div class="full">
-      <label for="baseUrl">Backend Base URL</label>
-      <input id="baseUrl" value="" placeholder="https://your-service.onrender.com">
-    </div>
-    <div><label for="userId">User ID</label><input id="userId" value="demo-user"></div>
-    <div><label for="videoId">Video ID</label><input id="videoId" type="number" min="1" value="550"></div>
-    <div><label for="mediaType">Type</label><select id="mediaType"><option value="movies">movies</option><option value="tv">tv</option></select></div>
-    <div><label for="total">Total Time (ms)</label><input id="total" type="number" min="0" value="7200000"></div>
-    <div><label for="playback">Playback Time (ms)</label><input id="playback" type="number" min="0" value="123000"></div>
-    <div><label for="season">Season</label><input id="season" type="number" min="0" value="0"></div>
-    <div><label for="episode">Episode</label><input id="episode" type="number" min="0" value="0"></div>
-    <div class="full"><label for="deviceHost">Device Host</label><input id="deviceHost" value="web-tester"></div>
-  </div>
+<div class="card">
+<label for="baseUrl">Backend Base URL</label>
+<input id="baseUrl" placeholder="https://your-service.onrender.com">
+<div class="status">Auth: <span id="authStatus" class="pill">Signed out</span></div>
+</div>
 
-  <button id="save">Save Progress</button>
+<div class="card">
+<h2>Account</h2>
+<div class="grid">
+<div><label for="email">Email</label><input id="email" type="email" placeholder="you@example.com" autocomplete="email"></div>
+<div><label for="password">Password</label><input id="password" type="password" placeholder="At least 6 characters" autocomplete="current-password"></div>
+</div>
+<div class="row" style="margin-top:12px"><button id="signup">Sign Up</button><button id="signin">Sign In</button><button id="signout">Sign Out</button></div>
+<p id="authMessage" class="muted"></p>
+</div>
 
-  <hr>
-  <h2>Load Progress</h2>
-  <div class="grid">
-    <div><label for="loadUser">User ID</label><input id="loadUser" value="demo-user"></div>
-    <div><label for="watchedId">Watched ID</label><input id="watchedId" value="m550" placeholder="m550 or tv330"></div>
-  </div>
-  <button id="load">Load Progress</button>
+<div class="card">
+<h2>Save Progress</h2>
+<div class="grid">
+<div><label for="videoId">Video ID</label><input id="videoId" type="number" min="1" value="550"></div>
+<div><label for="mediaType">Type</label><select id="mediaType"><option value="movies">movies</option><option value="tv">tv</option></select></div>
+<div><label for="total">Total Time (ms)</label><input id="total" type="number" min="0" value="7200000"></div>
+<div><label for="playback">Playback Time (ms)</label><input id="playback" type="number" min="0" value="123000"></div>
+<div><label for="season">Season</label><input id="season" type="number" min="0" value="0"></div>
+<div><label for="episode">Episode</label><input id="episode" type="number" min="0" value="0"></div>
+<div class="full"><label for="deviceHost">Device Host</label><input id="deviceHost" value="web-tester"></div>
+</div>
+<button id="save" style="margin-top:12px">Save Progress</button>
+</div>
 
-  <h2>Response</h2>
-  <pre id="response">Ready.</pre>
+<div class="card">
+<h2>Load Progress</h2>
+<div class="grid">
+<div><label for="watchedId">Watched ID</label><input id="watchedId" value="m550" placeholder="m550 or tv330"></div>
+</div>
+<button id="load" style="margin-top:12px">Load Progress</button>
+</div>
 
-  <script>
-    const $ = id => document.getElementById(id);
-    const response = $('response');
-
-    function baseUrl() {
-      const value = $('baseUrl').value.trim();
-      return value || window.location.origin;
-    }
-
-    async function request(url, options = {}) {
-      response.textContent = 'Loading...';
-      try {
-        const res = await fetch(url, options);
-        const text = await res.text();
-        let body;
-        try { body = JSON.parse(text); } catch { body = text; }
-        response.textContent = JSON.stringify({ http_status: res.status, response: body }, null, 2);
-      } catch (err) {
-        response.textContent = JSON.stringify({ error: String(err) }, null, 2);
-      }
-    }
-
-    $('save').onclick = () => {
-      const payload = {
-        user_id: $('userId').value.trim(),
-        video_id: Number($('videoId').value),
-        media_type: $('mediaType').value,
-        total_time_ms: Number($('total').value),
-        playback_time_ms: Number($('playback').value),
-        season_number: Number($('season').value),
-        episode_number: Number($('episode').value),
-        device_host: $('deviceHost').value.trim(),
-        watched_id: 'client-cannot-control-this'
-      };
-      request(`${baseUrl()}/api/progress`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload)
-      });
-    };
-
-    $('load').onclick = () => {
-      const user = encodeURIComponent($('loadUser').value.trim());
-      const watched = encodeURIComponent($('watchedId').value.trim());
-      request(`${baseUrl()}/api/progress/${user}/${watched}`);
-    };
-  </script>
+<div class="card"><h2>Raw API Response</h2><pre id="response">Ready.</pre></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);let accessToken=localStorage.getItem('watch_progress_access_token')||'';
+function baseUrl(){return ($('baseUrl').value.trim()||window.location.origin).replace(/\/$/,'')}
+function setAuthStatus(text){$('authStatus').textContent=text}
+function show(obj){$('response').textContent=JSON.stringify(obj,null,2)}
+async function api(path,options={}){const headers=new Headers(options.headers||{});if(accessToken)headers.set('Authorization','Bearer '+accessToken);const res=await fetch(baseUrl()+path,{...options,headers});const text=await res.text();let body;try{body=JSON.parse(text)}catch{body=text}return {http_status:res.status,response:body}}
+async function auth(action){$('authMessage').textContent='Working...';const email=$('email').value.trim(),password=$('password').value;if(!email||!password){$('authMessage').textContent='Email and password are required.';return}const result=await api('/api/auth/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});show(result);if(result.http_status>=200&&result.http_status<300){const data=result.response;if(data.access_token){accessToken=data.access_token;localStorage.setItem('watch_progress_access_token',accessToken);setAuthStatus(data.user?.email||'Signed in');$('authMessage').textContent='Signed in successfully.'}else{$('authMessage').textContent='Account created. Check your email if confirmation is enabled, then sign in.'}}else $('authMessage').textContent=dataError(result.response)}
+function dataError(v){return v?.msg||v?.message||v?.error_description||v?.error||'Request failed.'}
+$('signup').onclick=()=>auth('signup');$('signin').onclick=()=>auth('signin');
+$('signout').onclick=()=>{accessToken='';localStorage.removeItem('watch_progress_access_token');setAuthStatus('Signed out');$('authMessage').textContent='Signed out.';show({status:'signed_out'})}
+$('save').onclick=async()=>{const result=await api('/api/progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_id:Number($('videoId').value),media_type:$('mediaType').value,total_time_ms:Number($('total').value),playback_time_ms:Number($('playback').value),season_number:Number($('season').value),episode_number:Number($('episode').value),device_host:$('deviceHost').value.trim()})});show(result);if(result.response?.watched_id)$('watchedId').value=result.response.watched_id}
+$('load').onclick=async()=>{const watched=encodeURIComponent($('watchedId').value.trim());if(!watched){show({error:'watched_id is required'});return}let user=null;try{const r=await api('/api/auth/user');if(r.http_status===200)user=r.response} catch(e){}if(!user){show({error:'Sign in first.'});return}show(await api('/api/progress/'+encodeURIComponent(user.id)+'/'+watched))}
+(async()=>{if(!accessToken)return;const r=await api('/api/auth/user');if(r.http_status===200){setAuthStatus(r.response.email||'Signed in')}else{accessToken='';localStorage.removeItem('watch_progress_access_token')}})();
+</script>
 </body>
 </html>
