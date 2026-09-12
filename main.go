@@ -784,9 +784,70 @@ func (a *App) progressByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/progress/"), "/")
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/progress/"), "/"), "/")
+
+	// /api/progress/{user_id} -> list every watched item for that user
+	if len(parts) == 1 && parts[0] != "" {
+		if parts[0] != user.ID {
+			writeError(w, http.StatusForbidden, "user_id does not match the authenticated account")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		const listQuery = `
+            select id,user_id,video_id,media_type,total_time_ms,playback_time_ms,
+                   season_number,episode_number,device_host,watched_id,created_at,updated_at
+            from public.watch_progress
+            where user_id = $1
+            order by updated_at desc
+        `
+
+		rows, err := a.db.QueryContext(ctx, listQuery, user.ID)
+		if err != nil {
+			log.Printf("list progress: %v", err)
+			writeError(w, http.StatusInternalServerError, "failed to load progress")
+			return
+		}
+		defer rows.Close()
+
+		out := []progressResponse{}
+		for rows.Next() {
+			var p progressResponse
+			if err := rows.Scan(
+				&p.ID,
+				&p.UserID,
+				&p.VideoID,
+				&p.MediaType,
+				&p.TotalTimeMS,
+				&p.PlaybackTimeMS,
+				&p.SeasonNumber,
+				&p.EpisodeNumber,
+				&p.DeviceHost,
+				&p.WatchedID,
+				&p.CreatedAt,
+				&p.UpdatedAt,
+			); err != nil {
+				log.Printf("scan progress row: %v", err)
+				writeError(w, http.StatusInternalServerError, "failed to load progress")
+				return
+			}
+			out = append(out, p)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("list progress rows: %v", err)
+			writeError(w, http.StatusInternalServerError, "failed to load progress")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	// /api/progress/{user_id}/{watched_id} -> a single watched item
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		writeError(w, http.StatusBadRequest, "path must be /api/progress/{user_id}/{watched_id}")
+		writeError(w, http.StatusBadRequest, "path must be /api/progress/{user_id} or /api/progress/{user_id}/{watched_id}")
 		return
 	}
 
