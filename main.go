@@ -39,6 +39,8 @@ type App struct {
 	httpClient     *http.Client
 	ssoMutex       sync.RWMutex
 	ssoTickets     map[string]*ssoTicket
+	revokedMutex   sync.RWMutex
+	revokedTokens  map[string]time.Time
 }
 
 type progressRequest struct {
@@ -129,6 +131,7 @@ func main() {
 		baseURL:        baseURL,
 		httpClient:     &http.Client{Timeout: 10 * time.Second},
 		ssoTickets:     make(map[string]*ssoTicket),
+		revokedTokens:  make(map[string]time.Time),
 	}
 
 	mux := http.NewServeMux()
@@ -282,6 +285,10 @@ func (a *App) authenticate(r *http.Request) (supabaseUser, error) {
 }
 
 func (a *App) validateSupabaseToken(ctx context.Context, token string) (supabaseUser, error) {
+	if a.isTokenRevoked(token) {
+		return supabaseUser{}, errors.New("token has been logged out")
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
@@ -595,11 +602,62 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token := extractToken(r)
+	if token != "" {
+		a.revokeToken(token)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		supaReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.supabaseURL+"/auth/v1/logout", nil)
+		if err == nil {
+			supaReq.Header.Set("apikey", a.publishableKey)
+			supaReq.Header.Set("Authorization", "Bearer "+token)
+			_, _ = a.httpClient.Do(supaReq)
+		}
+	}
+
 	clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"message": "logged out",
 	})
+}
+
+func (a *App) revokeToken(token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	a.revokedMutex.Lock()
+	defer a.revokedMutex.Unlock()
+	if a.revokedTokens == nil {
+		a.revokedTokens = make(map[string]time.Time)
+	}
+	a.revokedTokens[token] = time.Now()
+
+	now := time.Now()
+	for t, tTime := range a.revokedTokens {
+		if now.Sub(tTime) > 24*time.Hour {
+			delete(a.revokedTokens, t)
+		}
+	}
+}
+
+func (a *App) isTokenRevoked(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	a.revokedMutex.RLock()
+	defer a.revokedMutex.RUnlock()
+	if a.revokedTokens == nil {
+		return false
+	}
+	tTime, exists := a.revokedTokens[token]
+	if !exists {
+		return false
+	}
+	return time.Since(tTime) < 24*time.Hour
 }
 
 func (a *App) createSSOTicket(userID, email, token, returnURL string) string {
@@ -874,7 +932,7 @@ func setSessionCookie(w http.ResponseWriter, token string) {
 		MaxAge:   30 * 24 * 60 * 60, // 30 days
 		HttpOnly: true,
 		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteNoneMode,
 	})
 }
 
@@ -886,7 +944,7 @@ func clearSessionCookie(w http.ResponseWriter) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteNoneMode,
 	})
 }
 
@@ -907,7 +965,9 @@ func isAllowedRedirectURL(rawURL string) bool {
 	}
 	hostname := strings.ToLower(parsed.Hostname())
 	allowed := []string{
+		"jade-genie-927c3c.netlify.app",
 		"testingplaty.netlify.app",
+		"netlify.app",
 		"testing-for-api.onrender.com",
 		"kinflexbackend.onrender.com",
 		"kineflex.site",
